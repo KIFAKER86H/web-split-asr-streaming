@@ -1,0 +1,10 @@
+services:
+  web-split:
+    build: .
+    ports:
+      - "9999:3000"
+    # Real values live in `.env`, never in this file or the image — see the
+    # header comment in `Dockerfile`. Copy `.env.example` to `.env` first.
+    env_file:
+      - .env
+    restart: unless-stopped

@@ -1,0 +1,132 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/**
+ * Accent, taken from the supplied palette — the orchid-pink end of it.
+ *
+ * Plain `@theme` rather than `@theme inline` on purpose: this one has to emit a
+ * real custom property, because the ambient glow below mixes it down rather
+ * than repeating the hex.
+ *
+ * The base tone is light enough that white text on it only reaches 2.3:1, so
+ * anything sitting on `bg-accent` uses near-black instead.
+ */
+@theme {
+  --color-accent: #de8ddf;
+  --color-accent-bright: #eaa9eb;
+  --color-accent-soft: #e6defd;
+}
+
+:root {
+  --accent-glow: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  /*
+   * The halo around the caption box is white rather than accent-tinted: it
+   * reads as the box catching light, which keeps attention on the text instead
+   * of adding a second coloured element competing with the accent button.
+   */
+  --caption-halo: color-mix(in srgb, #ffffff 45%, transparent);
+  /*
+   * The same white light, spread across a frameless screen. With the box gone
+   * there is no edge left to cast a shadow, so the glow sits behind the text
+   * instead — far weaker, because it covers the whole viewport rather than
+   * hugging a border.
+   */
+  --caption-ambient: color-mix(in srgb, #ffffff 6%, transparent);
+
+  /**
+   * Height of the opaque bar across the top of the display — the one holding
+   * the logo and the mode label. **This is the size knob**: the caption's own
+   * top padding is derived from it below, so the text always clears the bar
+   * no matter what this is set to.
+   */
+  --caption-topbar: clamp(5rem, 9vh, 6rem);
+
+  /**
+   * How deep the caption's soft edge is. An absolute length rather than a
+   * percentage of the pane, so it reads the same regardless of viewport size.
+   */
+  --caption-fade-depth: clamp(2rem, 5vh, 3.5rem);
+}
+
+/**
+ * Caption typography.
+ *
+ * Every value is a custom property so the settings panel can change it without
+ * re-rendering a pane that may be holding a long transcript. The fallbacks
+ * inside `var()` cover the instant before the server's `.env` values land on
+ * `<html>` — see `src/lib/display.ts` for how the three layers stack.
+ */
+.caption-text {
+  font-family: var(--caption-font-family, var(--font-caption), sans-serif);
+  font-size: var(--caption-font-size, clamp(1.1rem, min(2.5vw, 4vh), 4.4rem));
+  line-height: var(--caption-line-height, 1.9);
+  font-weight: var(--caption-font-weight, 300);
+  letter-spacing: var(--caption-letter-spacing, 0.01em);
+}
+
+/**
+ * The one pane a tab shows, filling the screen below the top bar.
+ *
+ * Unlike the combined display this app split off from, there is no split
+ * ratio here — a tab is either the transcribe display or the translate
+ * display, in full, never a fraction of both. `--caption-fade-start` is where
+ * the soft top edge begins: right where the opaque bar ends, so a line
+ * leaving the top of the pane dissolves instead of being clipped, and the
+ * bar itself stops anything from lingering as a ghost above that.
+ */
+.caption-pane {
+  --caption-fade-start: var(--caption-topbar);
+
+  flex: 1 1 auto;
+  padding-top: calc(
+    var(--caption-topbar) + var(--caption-fade-depth) + clamp(0.25rem, 1vh, 0.75rem)
+  );
+  /*
+   * The baseline `clamp()` is the breathing room every install gets for
+   * free; `--caption-bottom-gap` is the operator's own top-up on it, raising
+   * the text further off the bottom edge — for a screen that shares the
+   * frame with something else sitting below it (a lower-third, a taskbar,
+   * another OBS source). It is unitless in the custom property (see
+   * `captionCssVars` in `src/lib/caption.ts`, the same trick
+   * `--caption-line-height` uses), so it is multiplied by `1vh` here, at the
+   * one place that actually needs the unit.
+   */
+  padding-bottom: calc(
+    clamp(1rem, 3vh, 3.5rem) + var(--caption-bottom-gap, 0) * 1vh
+  );
+}
+
+html,
+body {
+  background: #000000;
+  color: #fafafa;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/**
+ * The caption viewport fades into the black background at both edges, so lines
+ * scrolling in and out dissolve instead of being clipped by a hard border.
+ * The mask lives on the scroll container itself, which keeps it pinned to the
+ * viewport while the content moves underneath.
+ */
+.caption-viewport {
+  --caption-fade: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--caption-fade-start, 0px),
+    #000 calc(var(--caption-fade-start, 0px) + var(--caption-fade-depth)),
+    #000 calc(100% - var(--caption-fade-depth)),
+    transparent 100%
+  );
+  -webkit-mask-image: var(--caption-fade);
+  mask-image: var(--caption-fade);
+  scrollbar-width: none;
+}
+
+.caption-viewport::-webkit-scrollbar {
+  display: none;
+}
