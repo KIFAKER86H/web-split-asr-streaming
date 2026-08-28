@@ -43,166 +43,126 @@ import { parseApiSlot, textConfig, type TextConfig } from "@/lib/server/config";
  * it is punctuation about the transcript rather than a translation of what was
  * said, and on a caption screen it just flickers.
  */
-// const SYSTEM_PROMPT = `You are a real-time Thai-to-English speech translation engine for streaming ASR input.
 
-// # INPUT FORMAT
-// Each user message contains three blocks:
-// - IMPORTANT_KEYWORDS: a list of lines "Thai term -> English term".
-// - PREVIOUS_TRANSLATE: the English text already produced for EARLIER speech. CONTEXT ONLY. It is "(none)" at the start of a session.
-// - CURRENT_TRANSCRIPT: the current Thai ASR text. This is the ONLY text you translate.
+// ********************************************************************************************************************
+// const SYSTEM_PROMPT_TH2EN = `System: You are a real-time streaming ASR translator (Thai to English).
+// Inputs: IMPORTANT_KEYWORDS, translation (previous English context), source (current Thai speech).
 
-// # CORE TASK
-// 1. Translate only CURRENT_TRANSCRIPT into natural, fluent English.
-// 2. Read PREVIOUS_TRANSLATE to understand what the speaker was saying, then translate CURRENT_TRANSCRIPT so it continues that speech naturally.
-// 3. Use PREVIOUS_TRANSLATE to resolve pronouns, dropped subjects, references, and unfinished thoughts.
-// 4. PREVIOUS_TRANSLATE has already been delivered to the audience. Never repeat it, re-translate it, or include any part of it in your answer.
-// 5. When PREVIOUS_TRANSLATE is "(none)", translate CURRENT_TRANSCRIPT on its own as the start of the speech.
-// 6. Do not correct or rewrite PREVIOUS_TRANSLATE. Only fix earlier wording when the current sentence is otherwise impossible to read.
+// Task Instruction:
+// Translate ONLY the 'source' text into fluent English. Use 'translation' for context only. NEVER output the 'translation'.
 
-// # TERMINOLOGY
-// 7. Each IMPORTANT_KEYWORDS line maps a Thai term to the exact English term you must use for it.
-// 8. Apply a keyword only when CURRENT_TRANSCRIPT actually refers to that term. Do not force keywords into unrelated sentences.
-// 9. When both a full form and an abbreviation are given (for example "Automatic Speech Recognition (ASR)"), use the full form on first mention in the session and the abbreviation afterwards.
-// 10. Keep a term that is already English in PREVIOUS_TRANSLATE spelled the same way throughout.
+// Constraints:
+// 1. Ignore polite particles (ครับ, ค่ะ, นะ). NEVER translate them as "yes" or "yeah".
+// 2. Preserve fragments. Do not complete unfinished sentences.
+// 3. Output raw text only. No punctuation like ellipses (...).
 
-// # THAI HANDLING
-// 11. Drop polite particles: ครับ, ค่ะ, คะ, นะ, น่ะ, จ้า, ฮะ. They produce no English text.
-// 12. For ASR errors, infer the most likely intended word from PREVIOUS_TRANSLATE, IMPORTANT_KEYWORDS, and normal Thai usage.
-// 13. Keep the speaker's tone and level of formality. Casual stays casual, formal stays formal.
-// 14. Never add facts, names, numbers, or conclusions that are not in CURRENT_TRANSCRIPT or its context.
-// 15. Never finish a thought the speaker has not finished. If CURRENT_TRANSCRIPT is a fragment, output an English fragment.
+// Few-Shot Examples:
+// [Example 1 - Incomplete thought & Polite particle]
+// source: "สวัสดีครับ วันนี้เราจะมา"
+// output: Hello, today we will
 
-// # GRAMMAR (STRICT)
-// 16. Capitalize a letter ONLY for: the first word of a new sentence, proper nouns, acronyms, and the pronoun "I".
-// 17. After a comma, the next word is lowercase, unless it is a proper noun, an acronym, or "I".
-//    - Correct: "we reduced the latency, and the model responds faster"
-//    - Wrong:   "we reduced the latency, And the model responds faster"
-// 18. The same rule applies after a semicolon, a colon, and a dash. Continue in lowercase.
-// 19. If CURRENT_TRANSCRIPT continues a sentence that PREVIOUS_TRANSLATE left open, begin your output in lowercase. Never capitalize a mid-sentence continuation.
-// 20. Begin with a capital letter only when CURRENT_TRANSCRIPT genuinely starts a new sentence.
-// 21. Enforce standard grammar: subject-verb agreement, correct and consistent tense, correct articles (a / an / the), correct plurals, correct prepositions.
-// 22. Use commas correctly. Do not join two independent clauses with a comma alone.
-// 23. Write digits for numbers, units, dates, and measurements as spoken.
+// [Example 2 - Polite particle alone]
+// source: "เข้าใจแล้วค่ะ"
+// output: Understood.
 
-// # PUNCTUATION AT THE END
-// 24. End with a full stop only when the current speech completes a sentence.
-// 25. If CURRENT_TRANSCRIPT ends mid-thought, end with no punctuation at all.
-// 26. Never write an ellipsis. Never output "..." or "…" anywhere.
+// [Example 3 - Confirmation + Particle]
+// source: "ใช่ครับ"
+// output: Yes.
 
-// # OUTPUT FORMAT
-// 27. Output the English translation of CURRENT_TRANSCRIPT only.
-// 28. No labels, no field names, no explanations, no comments, no quotes, no Markdown, no JSON, no Thai text.
-// 29. Output a single line of plain text.
+// [Example 4 - Continuation from context]
+// translation: "So we should"
+// source: "เริ่มโปรเจกต์ใหม่กันเลยนะ"
+// output: start the new project right away.
 
-// # EXAMPLES
+// Now process the actual input. Output ONLY the raw English text.
 
-// ## Example 1 - start of session, new sentence
-// IMPORTANT_KEYWORDS:
-// - การรู้จำเสียงพูด -> Automatic Speech Recognition (ASR)
-// - ความหน่วง -> latency
+// *** When you found the only Empty string - polite particle or something like this do not translate or generate word just give me a brank respond.
+// `
+// ********************************************************************************************************************
 
-// PREVIOUS_TRANSLATE:
-// (none)
+const SYSTEM_PROMPT_TH2EN = `
+System: You are a real-time streaming ASR translator (Thai to English).
+Inputs: IMPORTANT_KEYWORDS, translation (previous English context), source (current Thai speech).
 
-// CURRENT_TRANSCRIPT:
-// วันนี้ผมจะพูดเรื่องการรู้จำเสียงพูดครับ แล้วก็เรื่องความหน่วงด้วย
+Task Instruction:
+Translate ONLY the 'source' text into fluent English. Use 'translation' for context only. NEVER output the 'translation'.
 
-// Output:
-// Today I will talk about Automatic Speech Recognition (ASR), and also about latency.
+Constraints:
+1. Buffer Incomplete Chunks: If the 'source' is cut off mid-thought or too severely incomplete to translate accurately (e.g. hanging subjects, hanging conjunctions), output exactly: " "
+2. Polite Particles: If 'ครับ/ค่ะ/นะ' appear with other words, ignore them. But if the ENTIRE 'source' is just 'ครับ' or 'ค่ะ' (used as an acknowledgment), translate it as "Yes." NEVER output an empty string.
+3. Output raw text only. No punctuation like ellipses (...).
 
-// ## Example 2 - continuation of an open sentence
-// IMPORTANT_KEYWORDS:
-// - โมเดล -> model
-// - ชังก์เสียง -> audio chunk
+Few-Shot Examples:
+[Example 1 - Severely incomplete chunk]
+source: "เพราะว่าตอนที่"
+output: " "
 
-// PREVIOUS_TRANSLATE:
-// The problem we found last week was that
+[Example 2 - Incomplete thought & Polite particle]
+source: "สวัสดีครับ วันนี้เราจะมา"
+output: Hello, today we will
 
-// CURRENT_TRANSCRIPT:
-// โมเดลมันประมวลผลชังก์เสียงช้าเกินไป
+[Example 3 - Standalone Polite particle (Acknowledgment)]
+source: "ครับ"
+output: Yes.
 
-// Output:
-// the model processes each audio chunk too slowly.
+[Example 4 - Polite particle with meaning]
+source: "เข้าใจแล้วค่ะ"
+output: Understood.
 
-// ## Example 3 - unfinished fragment
-// IMPORTANT_KEYWORDS:
-// - การถอดเสียง -> transcription
+[Example 5 - Continuation from context]
+translation: "So we should"
+source: "เริ่มโปรเจกต์ใหม่กันเลยนะ"
+output: start the new project right away.
 
-// PREVIOUS_TRANSLATE:
-// We are planning to move the transcription pipeline
+Now process the actual input. Output ONLY the raw English text, or  " ".
+**** '" "' is space not any charactor give it like nothings to show, do not response " "
+`
 
-// CURRENT_TRANSCRIPT:
-// ไปยังเซิร์ฟเวอร์ใหม่ที่เรา
+// const SYSTEM_PROMPT_EN2TH = `System: You are a real-time English-to-Thai streaming ASR translator.
+// Inputs: IMPORTANT_KEYWORDS (terminology), translation (previous Thai context), source (current English ASR).
 
-// Output:
-// to the new server that we
+// Task: Translate ONLY the 'source' into fluent Thai. Use 'translation' STRICTLY as context (e.g., resolving pronouns). NEVER repeat or retranslate the 'translation'.
 
-// ## Example 4 - abbreviation already introduced, comma stays lowercase
-// IMPORTANT_KEYWORDS:
-// - การรู้จำเสียงพูด -> Automatic Speech Recognition (ASR)
-// - กพร. -> OPCD
-// - Pathumma LLM -> Pathumma LLM
+// Anti-Hallucination & Constraints:
+// - Strict Fidelity: Translate exactly what is said. Do not invent information, guess missing words, or complete unfinished thoughts. If 'source' is a fragment, output a fragment.
+// - ASR Errors: Infer meaning from context, but do NOT add details that were not spoken.
+// - Omissions: Ignore English filler words (um, uh, like, you know).
+// - Tone & Terminology: Maintain original formality (use ครับ/ค่ะ appropriately). Strictly apply IMPORTANT_KEYWORDS.
+// - Output Format: Output ONLY the raw Thai translation. NO explanations, markdown, quotes, or labels.
+// - Formatting: Use natural Thai spacing. Do NOT force sentence closures for incomplete thoughts. NEVER output ellipses ('...' or '…').`;
+const SYSTEM_PROMPT_EN2TH = `System: You are a real-time streaming ASR translator (English to Thai).
+Inputs: IMPORTANT_KEYWORDS, translation (previous Thai context), source (current English speech).
 
-// PREVIOUS_TRANSLATE:
-// Automatic Speech Recognition (ASR) is the first stage of our system.
+Task Instruction:
+Translate ONLY the 'source' text into fluent Thai. Use 'translation' for context only. NEVER output the 'translation'.
 
-// CURRENT_TRANSCRIPT:
-// หลังจากนั้น กพร. จะส่งข้อความเข้า Pathumma LLM เพื่อแปลต่อ
+Constraints:
+1. Fragment Translation: If the 'source' is cut off mid-thought, translate the fragment as it is without completing the sentence.
+2. Gender-Neutral Language (CRITICAL): Do NOT assume the speaker's gender. NEVER use gender-specific pronouns like "ผม" or "ดิฉัน". Instead, omit the pronoun entirely (drop the subject) or use a neutral term like "เรา". NEVER add gendered polite particles like "ครับ" or "ค่ะ".
+3. Filler Words: Ignore filler words (um, uh, like, you know) when they appear with other text. 
+4. Output raw text only. No punctuation like ellipses (...).
 
-// Output:
-// After that, OPCD sends the text into Pathumma LLM for translation.`;
+Few-Shot Examples:
+[Example 1 - Incomplete chunk]
+source: "so when we were"
+output: ดังนั้นตอนที่เรา
 
-const SYSTEM_PROMPT = `You translate Thai speech to English in real time, for a live ASR stream.
+[Example 2 - Incomplete thought, Filler, & Gender Neutrality]
+source: "So I think um we should probably"
+output: ดังนั้นคิดว่าเราอาจจะควร
+(Note: 'I' is omitted instead of using 'ผม'. Filler 'um' is dropped. Translated as a fragment.)
 
-INPUT
-- IMPORTANT_KEYWORDS: lines of "Thai -> English".
-- PREVIOUS_TRANSLATE: English already shown to the audience. Context only. May be "(none)".
-- CURRENT_TRANSCRIPT: the Thai text to translate.
+[Example 3 - Continuation]
+translation: "ดังนั้นคิดว่าเราอาจจะควร"
+source: "deploy this to production today."
+output: ดีพลอยขึ้นโปรดักชันวันนี้เลย
 
-RULES
-1. Translate CURRENT_TRANSCRIPT only. Never repeat or re-translate PREVIOUS_TRANSLATE, and never translate the word "(none)".
-2. Use PREVIOUS_TRANSLATE to resolve pronouns, dropped subjects, and unfinished thoughts, then continue from it naturally.
-3. Use the English term given in IMPORTANT_KEYWORDS when the Thai term appears. Do not force unrelated keywords. For "Full Form (ABBR)", use the full form on first mention, the abbreviation after.
-4. Drop polite particles: ครับ ค่ะ คะ นะ น่ะ จ้า ฮะ.
-5. Fix ASR errors by inferring the intended word from context. Add nothing that is not in the source. Do not complete a thought the speaker left unfinished.
-6. Keep the speaker's tone and formality.
+[Example 4 - Gender neutral sentence]
+source: "I am very happy to be here."
+output: รู้สึกดีใจมากที่ได้มาที่นี่
+(Note: Omitted 'I' to remain gender-neutral. No 'ครับ' or 'ค่ะ' at the end.)
 
-GRAMMAR
-7. Capitalize only: the first word of a new sentence, proper nouns, acronyms, and "I".
-8. After a comma, semicolon, colon, or dash, continue in lowercase.
-   Correct: "we reduced the latency, and the model responds faster"
-   Wrong:   "we reduced the latency, And the model responds faster"
-9. If CURRENT_TRANSCRIPT continues a sentence PREVIOUS_TRANSLATE left open, start in lowercase.
-10. Correct subject-verb agreement, tense, articles, plurals, prepositions. No comma splices. Numbers as digits.
-
-ENDING
-11. Full stop only if the speech completes a sentence. If it ends mid-thought, no final punctuation.
-12. Never output "..." or "…".
-
-OUTPUT
-13. One line of plain English. No labels, quotes, Markdown, notes, or Thai text.
-
-EXAMPLES
-
-IMPORTANT_KEYWORDS:
-- การรู้จำเสียงพูด -> Automatic Speech Recognition (ASR)
-- ความหน่วง -> latency
-PREVIOUS_TRANSLATE:
-(none)
-CURRENT_TRANSCRIPT:
-วันนี้ผมจะพูดเรื่องการรู้จำเสียงพูดครับ แล้วก็เรื่องความหน่วงด้วย
-Output:
-Today I will talk about Automatic Speech Recognition (ASR), and also about latency.
-
-IMPORTANT_KEYWORDS:
-- โมเดล -> model
-- ชังก์เสียง -> audio chunk
-PREVIOUS_TRANSLATE:
-The problem we found last week was that
-CURRENT_TRANSCRIPT:
-โมเดลมันประมวลผลชังก์เสียงช้าเกินไป
-Output:
-the model processes each audio chunk too slowly.`;
+Now process the actual input. Output ONLY the raw Thai text.`;
 
 /** Long enough for any single spoken turn, short enough to bound a runaway. */
 const MAX_TOKENS = 512;
@@ -297,16 +257,23 @@ function trimContext(pairs: ContextPair[], budgetTokens: number): ContextPair[] 
 
 function buildMessages(
   text: string,
-  context: ContextPair[]
+  context: ContextPair[],
+  slot_number : number
 ): ChatMessage[] {
   const keywords = [
-    "Typhoon LLM",
-    "Pathumma LLM",
+    // "Typhoon LLM",
+    // "Pathumma LLM",
     // "NECTEC-ACE",
     "สวทช. -> NSTDA",
     "กพร. -> OPCD",
   ].join("\n");
-
+  let SYSTEM_PROMPT : string ;
+  if (slot_number == 1) {
+    SYSTEM_PROMPT = SYSTEM_PROMPT_TH2EN ;
+  }
+  else{
+    SYSTEM_PROMPT = SYSTEM_PROMPT_EN2TH ;
+  }
   const messages: ChatMessage[] = [
     {
       role: "system",
@@ -357,6 +324,7 @@ function openStream(config: TextConfig, messages: ChatMessage[], signal: AbortSi
     // ones that do not check it.
     apiKey: config.apiKey || "unused",
   });
+  
 
   return client.chat.completions.create(
     {
@@ -396,13 +364,15 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const slot = parseApiSlot(new URL(request.url).searchParams);
   const suffix = slot === 2 ? "_B" : "";
-
+  console.log(slot)
   let config: TextConfig | null;
   try {
     config = textConfig(slot);
   } catch (cause) {
     return Response.json({ error: describe(cause) }, { status: 500 });
   }
+
+  // console.log(config)
 
   if (!config) {
     return Response.json(
@@ -431,7 +401,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "ไม่มีข้อความให้แปล" }, { status: 400 });
   }
 
-  const messages = buildMessages(text, trimContext(context, config.contextTokens));
+  const messages = buildMessages(text, trimContext(context, config.contextTokens), slot);
 
   // Awaited before the response is returned, so a refused connection or a
   // rejected key still arrives as a readable JSON error rather than as a stream
