@@ -44,7 +44,30 @@ import { parseApiSlot, textConfig, type TextConfig } from "@/lib/server/config";
  * said, and on a caption screen it just flickers.
  */
 
+// #############################################################################################################
+// First Prompt
+// #############################################################################################################
+// const SYSTEM_PROMPT_TH2EN = `System: You are a real-time streaming ASR translator (Thai to English).
+// Inputs: IMPORTANT_KEYWORDS, translation (previous English context), source (current Thai speech).
+
+// Task Instruction:
+// Translate ONLY the 'source' text into fluent English. Use the 'translation' strictly as contextual reference (e.g., to resolve pronouns or omitted subjects). NEVER repeat or retranslate the 'translation'.
+
+// Constraints (Anti-Hallucination):
+// - Strict Fidelity: Translate exactly what is present in 'source'. Do not guess missing parts. If 'source' is an incomplete sentence, the output MUST be an incomplete sentence.
+// - Polite Particles: Completely IGNORE Thai polite particles (ครับ, ค่ะ, นะ, จ้ะ). NEVER translate them as "yes", "yeah", "ok", or "right".
+// - ASR Errors: Infer meaning from context if misspelled, but do not invent new information.
+
+// Output Format:
+// - Output ONLY the raw English translation text.
+// - Capitalize appropriately. Do not force a final full stop (.) if the thought is incomplete.
+// - NEVER output ellipses (...) or conversational filler.`
+
 // ********************************************************************************************************************
+
+// #############################################################################################################
+// Second Prompt
+// #############################################################################################################
 // const SYSTEM_PROMPT_TH2EN = `System: You are a real-time streaming ASR translator (Thai to English).
 // Inputs: IMPORTANT_KEYWORDS, translation (previous English context), source (current Thai speech).
 
@@ -80,6 +103,10 @@ import { parseApiSlot, textConfig, type TextConfig } from "@/lib/server/config";
 // `
 // ********************************************************************************************************************
 
+
+// #############################################################################################################
+// Final Prompt
+// #############################################################################################################
 const SYSTEM_PROMPT_TH2EN = `
 System: You are a real-time streaming ASR translator (Thai to English).
 Inputs: IMPORTANT_KEYWORDS, translation (previous English context), source (current Thai speech).
