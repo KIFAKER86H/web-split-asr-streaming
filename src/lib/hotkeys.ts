@@ -13,6 +13,8 @@
  * no bootstrap-script counterpart here.
  */
 
+import { subscribeStorageKey } from "@/lib/cross-tab";
+
 const STORAGE_KEY = "nectec.caption.hotkeys.v1";
 
 export const DEFAULT_SWAP_SLOT_KEY = "F3";
@@ -46,4 +48,14 @@ export function writeSwapSlotKey(key: string): void {
   } catch {
     // Saving is a convenience; the binding is already active either way.
   }
+}
+
+/**
+ * Calls back when another tab rebinds the key, so every tab is listening for
+ * the same press without being reloaded first. Wraps `subscribeStorageKey`
+ * rather than exporting `STORAGE_KEY`: which entry this lives under is this
+ * file's business, and nothing outside it has a reason to know.
+ */
+export function subscribeSwapSlotKey(onChange: () => void): () => void {
+  return subscribeStorageKey(STORAGE_KEY, onChange);
 }

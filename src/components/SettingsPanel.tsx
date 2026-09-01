@@ -5,7 +5,7 @@ import {
   useEffect,
   useId,
   useRef,
-  useState,
+  useSyncExternalStore,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -27,9 +27,11 @@ import {
   buildFontSize,
   currentFontScale,
   currentLineHeightRatio,
-  readOverrides,
+  overridesSnapshot,
   resolveFontPx,
+  serverOverridesSnapshot,
   setOverrides,
+  subscribeOverrides,
   type DisplayOverrides,
 } from "@/lib/display";
 import { formatDuration } from "@/lib/format";
@@ -179,9 +181,11 @@ function Row({
 /**
  * Everything that is not the caption itself.
  *
- * Mounted only while the panel is open, which is what lets the sliders read
- * `localStorage` from a `useState` initialiser: there is no server-rendered
- * markup to disagree with, and no effect that would set state a frame later.
+ * Holds no copy of the display settings: every control here is driven straight
+ * from the store in `src/lib/display.ts`, which is also what the caption reads
+ * and what other tabs write to. One source of truth means a slider cannot
+ * drift from what is on screen, and a change arriving from another tab moves
+ * the control that represents it without any reconciliation step in between.
  */
 function Panel({
   onClose,
@@ -214,32 +218,46 @@ function Panel({
   const panelRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusRef = useRef<Element | null>(null);
 
-  // Measured once on open, so the sliders start where the caption actually is
-  // rather than at an arbitrary midpoint — the `.env` default may be a
-  // `clamp()`, which no amount of string parsing turns into a number.
-  const [settings, setSettings] = useState(() => {
-    const stored = readOverrides();
-    return {
-      overrides: stored,
-      fontScale:
-        stored.fontScale ?? currentFontScale(defaults.typography.fontSize),
-      lineHeight: stored.lineHeight ?? currentLineHeightRatio(),
-      bottomGap: stored.bottomGap ?? defaults.bottomGap,
-    };
-  });
+  /**
+   * Read through the store rather than held as this panel's own copy, so the
+   * controls follow a change made anywhere — including in another tab, which
+   * shares these settings and now says so live (see `src/lib/display.ts`).
+   * A panel left open on one monitor while the font is changed on another has
+   * to move with it; keeping a private snapshot here would also mean the next
+   * slider drag wrote that stale snapshot straight back over the other tab's
+   * change.
+   */
+  const overrides = useSyncExternalStore(
+    subscribeOverrides,
+    overridesSnapshot,
+    serverOverridesSnapshot,
+  );
 
-  const { overrides, fontScale, lineHeight, bottomGap } = settings;
+  /**
+   * Where a slider sits when nothing overrides it: measured off the live
+   * caption, which at that moment is rendering exactly the `.env` value. It
+   * has to be measured rather than read, because the configured value may be
+   * a `clamp()` or the keyword `normal` — neither of which any amount of
+   * string parsing turns into a number.
+   *
+   * Measured per render rather than once when the panel opens, which is what
+   * lets an untouched slider follow the caption instead of quoting a number
+   * from the moment the panel happened to be opened: through a window resize,
+   * and — the reason this changed — through a reset, whether it was pressed
+   * here or in another tab sharing these settings. The measurement is cheap
+   * (one probe element, appended and removed synchronously) and this panel
+   * already measures the rendered font size the same way, just below.
+   */
+  const fontScale =
+    overrides.fontScale ?? currentFontScale(defaults.typography.fontSize);
+  const lineHeight = overrides.lineHeight ?? currentLineHeightRatio();
+  const bottomGap = overrides.bottomGap ?? defaults.bottomGap;
 
   // What the chosen scale actually renders as on this screen. The slider's own
   // number is quoted at a reference width, which means nothing to someone
   // standing in front of a projector.
   const renderedPx = Math.round(resolveFontPx(buildFontSize(fontScale)));
   const streaming = status === "streaming";
-
-  // The merge source has to survive between renders: a slider fires changes
-  // faster than React commits them, and merging from the rendered `overrides`
-  // would let a second change overwrite the first with a stale copy.
-  const overridesRef = useRef(settings.overrides);
 
   useEffect(() => {
     restoreFocusRef.current = document.activeElement;
@@ -254,32 +272,25 @@ function Panel({
     };
   }, []);
 
-  /** Merges one setting through to the DOM and to storage in a single step. */
-  const update = useCallback(
-    (
-      patch: DisplayOverrides,
-      measured?: Partial<Omit<typeof settings, "overrides">>,
-    ) => {
-      const next = { ...overridesRef.current, ...patch };
-      overridesRef.current = next;
+  /**
+   * Merges one setting through to the DOM and to storage in a single step.
+   *
+   * The merge base is `overridesSnapshot()` rather than the `overrides` this
+   * render closed over: a slider fires changes faster than React commits them,
+   * and the snapshot is written synchronously by `setOverrides`, so it is the
+   * only source that is guaranteed current when a second change lands in the
+   * same tick as the first.
+   */
+  const update = useCallback((patch: DisplayOverrides) => {
+    setOverrides({ ...overridesSnapshot(), ...patch });
+  }, []);
 
-      setOverrides(next);
-      setSettings((previous) => ({ ...previous, ...measured, overrides: next }));
-    },
-    [],
-  );
-
+  // Dropping every override falls back to the `.env` values on its own — the
+  // custom properties come off `<body>` and `<html>`'s take over again — so
+  // there is nothing to restore here beyond emptying the store.
   const reset = useCallback(() => {
-    overridesRef.current = {};
-
     setOverrides({});
-    setSettings({
-      overrides: {},
-      fontScale: currentFontScale(defaults.typography.fontSize),
-      lineHeight: currentLineHeightRatio(),
-      bottomGap: defaults.bottomGap,
-    });
-  }, [defaults]);
+  }, []);
 
   const fontValue = overrides.fontFamily ?? defaults.typography.fontFamily;
   const knownFont = FONT_CHOICES.some((choice) => choice.value === fontValue);
@@ -484,10 +495,7 @@ function Panel({
               aria-label="ขนาดตัวอักษรของข้อความ"
               onChange={(event) => {
                 const next = Number(event.target.value);
-                update(
-                  { fontSize: buildFontSize(next), fontScale: next },
-                  { fontScale: next },
-                );
+                update({ fontSize: buildFontSize(next), fontScale: next });
               }}
             />
           </Row>
@@ -507,7 +515,7 @@ function Panel({
               aria-label="ระยะห่างระหว่างบรรทัด"
               onChange={(event) => {
                 const next = Number(event.target.value);
-                update({ lineHeight: next }, { lineHeight: next });
+                update({ lineHeight: next });
               }}
             />
           </Row>
@@ -531,7 +539,7 @@ function Panel({
               aria-label="ยกข้อความจากขอบล่างของจอ"
               onChange={(event) => {
                 const next = Number(event.target.value);
-                update({ bottomGap: next }, { bottomGap: next });
+                update({ bottomGap: next });
               }}
             />
           </Row>

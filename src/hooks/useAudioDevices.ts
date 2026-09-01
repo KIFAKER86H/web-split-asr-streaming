@@ -2,6 +2,13 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 
+import {
+  preferredDeviceSnapshot,
+  serverPreferredDeviceSnapshot,
+  setPreferredDevice,
+  subscribePreferredDevice,
+} from "@/lib/audio-device";
+
 export interface AudioDevice {
   deviceId: string;
   label: string;
@@ -9,6 +16,17 @@ export interface AudioDevice {
 
 export interface UseAudioDevicesResult {
   devices: AudioDevice[];
+  /**
+   * The microphone a recording started here would actually use: the stored
+   * choice while it is among the devices present, and the first one listed
+   * otherwise. Derived rather than stored so unplugging the chosen microphone
+   * falls back on its own — and so plugging it back in returns to it, since
+   * the preference underneath was never rewritten.
+   */
+  deviceId: string;
+  /** Records an explicit choice — shared with every tab on this origin, and
+   *  remembered for the next time the page is opened. */
+  setDeviceId: (deviceId: string) => void;
   /** Re-enumerate — worth calling again once a recording has started. */
   refresh: () => void;
 }
@@ -118,10 +136,27 @@ function subscribe(listener: () => void): () => void {
 const getSnapshot = () => cache;
 const getServerSnapshot = () => EMPTY;
 
-/** Lists the available microphones and keeps the list in step with the hardware. */
+/**
+ * Lists the available microphones, keeps the list in step with the hardware,
+ * and resolves which of them the app should record from.
+ *
+ * The choice is kept in its own store (`src/lib/audio-device.ts`) rather than
+ * in the caller's state: it is shared with every other tab, so it has to
+ * outlive any one component and arrive through a subscription rather than a
+ * prop.
+ */
 export function useAudioDevices(): UseAudioDevicesResult {
   const devices = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const preferred = useSyncExternalStore(
+    subscribePreferredDevice,
+    preferredDeviceSnapshot,
+    serverPreferredDeviceSnapshot,
+  );
   const refresh = useCallback(() => void refreshCache(), []);
 
-  return { devices, refresh };
+  const deviceId = devices.some((device) => device.deviceId === preferred)
+    ? preferred
+    : (devices[0]?.deviceId ?? "");
+
+  return { devices, deviceId, setDeviceId: setPreferredDevice, refresh };
 }

@@ -17,11 +17,18 @@
  * These overrides are shared across every tab on this origin, same as the
  * combined-display app this one split off from — a font choice made on the
  * transcribe tab should look right if that tab is later switched to
- * translate. What is *not* shared is which pane a tab shows at all: that
- * lives in `sessionStorage`, one tab at a time — see `src/lib/tab-mode.ts`.
+ * translate. Shared *live*, at that: the store below listens for the
+ * `storage` event, so a change made in one tab lands on every other one
+ * within the same frame rather than waiting for each of them to be reloaded.
+ * That matters here more than it would in most apps, since the other tab is
+ * typically a second monitor or an OBS browser source that nobody is sitting
+ * in front of to refresh. What is *not* shared is which pane a tab shows at
+ * all: that lives in `sessionStorage`, one tab at a time — see
+ * `src/lib/tab-mode.ts`.
  */
 
 import { CAPTION_CSS_VARS } from "@/lib/caption";
+import { subscribeStorageKey } from "@/lib/cross-tab";
 
 /** Bumped only if the stored shape changes in a way older data cannot satisfy. */
 export const STORAGE_KEY = "nectec.caption.v1";
@@ -311,10 +318,54 @@ const EMPTY_OVERRIDES: DisplayOverrides = {};
 
 let cached: DisplayOverrides | null = null;
 const listeners = new Set<() => void>();
+/** Live only while something is subscribed — see `subscribeOverrides`. */
+let stopStorageSync: (() => void) | null = null;
 
+function notify(): void {
+  for (const listener of listeners) {
+    listener();
+  }
+}
+
+/**
+ * Takes on the overrides another tab just saved.
+ *
+ * `setOverrides` without the write-back: the tab that made the change has
+ * already stored it, and storing it again from here would be a redundant
+ * write of a value that is by definition already what is on disk.
+ *
+ * The re-read goes through `readOverrides` rather than the event's own
+ * `newValue` so a value arriving from another tab is validated and clamped by
+ * exactly the same code that validates one read at startup — a hand-edited
+ * `localStorage` entry must not reach the DOM just because it took the
+ * cross-tab route in.
+ */
+function adoptStoredOverrides(): void {
+  cached = readOverrides();
+  applyOverrides(cached);
+  notify();
+}
+
+/**
+ * Subscribes to override changes — this tab's own and, since these settings
+ * describe the screen rather than the tab, those made in any other tab on this
+ * origin. The cross-tab listener is attached with the first subscriber and
+ * dropped with the last, so nothing is listening on a page that never reads
+ * the store.
+ */
 export function subscribeOverrides(listener: () => void): () => void {
+  if (listeners.size === 0) {
+    stopStorageSync = subscribeStorageKey(STORAGE_KEY, adoptStoredOverrides);
+  }
   listeners.add(listener);
-  return () => listeners.delete(listener);
+
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      stopStorageSync?.();
+      stopStorageSync = null;
+    }
+  };
 }
 
 export function overridesSnapshot(): DisplayOverrides {
@@ -329,10 +380,7 @@ export function setOverrides(next: DisplayOverrides): void {
   cached = next;
   applyOverrides(next);
   writeOverrides(next);
-
-  for (const listener of listeners) {
-    listener();
-  }
+  notify();
 }
 
 /**

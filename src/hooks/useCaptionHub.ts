@@ -229,27 +229,100 @@ export function useCaptionHub({
     port.start();
     port.postMessage({ type: "hello", tabId } satisfies ToHubMessage);
 
+    /**
+     * Re-announces this tab and pulls a fresh snapshot back.
+     *
+     * The hub re-admits a port it had already pruned as soon as anything
+     * arrives on it (see `handleMessage` in `caption-hub.js`), so this is what
+     * brings a tab that was frozen, folded away or bfcached back to life —
+     * without it, such a tab renders and animates perfectly while every state
+     * update and every button press quietly goes nowhere.
+     */
+    const resync = () => {
+      try {
+        port.postMessage({ type: "hello", tabId } satisfies ToHubMessage);
+      } catch {
+        // Port unusable — a reload is the only way back from that.
+      }
+    };
+
+    /** A suspended context keeps the worklet from running at all, so the
+     *  microphone would come back silent. Only ever non-null while this tab is
+     *  the producer. */
+    const resumeLocalAudio = () => {
+      const context = contextRef.current;
+      if (context && context.state === "suspended") {
+        void context.resume();
+      }
+    };
+
+    let lastTickAt = Date.now();
     const pingTimer = window.setInterval(() => {
-      port.postMessage({ type: "ping", tabId } satisfies ToHubMessage);
+      const now = Date.now();
+      // A tick this late means the browser throttled or froze this tab (it was
+      // backgrounded, the screen locked, the machine asleep) for long enough
+      // that the hub may have pruned the port — so re-announce rather than
+      // ping a registration that might no longer exist. A plain `ping` would
+      // in fact re-admit it too, but `hello` also asks for the state snapshot
+      // needed to catch up on whatever was missed.
+      const wasFrozen = now - lastTickAt > PING_INTERVAL_MS * 3;
+      lastTickAt = now;
+      port.postMessage({
+        type: wasFrozen ? "hello" : "ping",
+        tabId,
+      } satisfies ToHubMessage);
     }, PING_INTERVAL_MS);
 
-    // `pagehide` rather than `beforeunload`: both fire on a real close, but
-    // only `pagehide` also fires when the page is about to enter the
-    // back/forward cache — `beforeunload` is unreliable there in both
-    // browsers and can suppress the cache entirely if relied on for cleanup.
-    const handlePageHide = () => {
+    // Coming back into view: resync immediately instead of waiting up to a
+    // full ping interval, and pick the microphone back up if the OS suspended
+    // the audio context while the app was away.
+    const handleShow = () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      resync();
+      resumeLocalAudio();
+    };
+    document.addEventListener("visibilitychange", handleShow);
+    // Restored from the back/forward cache — no `visibilitychange` necessarily
+    // fires for that on its own.
+    window.addEventListener("pageshow", handleShow);
+
+    const sendBye = () => {
       try {
         port.postMessage({ type: "bye", tabId } satisfies ToHubMessage);
       } catch {
         // The port may already be unusable this late in teardown.
       }
     };
+
+    // `pagehide` rather than `beforeunload`: both fire on a real close, but
+    // only `pagehide` also fires when the page is about to enter the
+    // back/forward cache — `beforeunload` is unreliable there in both
+    // browsers and can suppress the cache entirely if relied on for cleanup.
+    const handlePageHide = (event: PageTransitionEvent) => {
+      // ...which is exactly why `persisted` has to be honoured here. A
+      // persisted `pagehide` is not a close at all: it is this page being set
+      // aside, which is what folding a phone or switching away from the app
+      // looks like, and it is routinely followed by the page coming straight
+      // back. Saying `bye` there had the hub drop the port — and, if this tab
+      // held the microphone, end the recording for every other tab too —
+      // seconds after the screen was folded. A real unload still says so, and
+      // the hub's heartbeat prune remains the backstop for the rest.
+      if (event.persisted) {
+        return;
+      }
+      sendBye();
+    };
     window.addEventListener("pagehide", handlePageHide);
 
     return () => {
       window.clearInterval(pingTimer);
+      document.removeEventListener("visibilitychange", handleShow);
+      window.removeEventListener("pageshow", handleShow);
       window.removeEventListener("pagehide", handlePageHide);
-      handlePageHide();
+      // Unmount is a real teardown, persisted or not.
+      sendBye();
       releaseLocalAudio();
       port.onmessage = null;
       port.close();
@@ -290,6 +363,21 @@ export function useCaptionHub({
         },
       });
       mediaStreamRef.current = mediaStream;
+
+      // A track can end without this tab doing anything: the OS revoking the
+      // microphone while the app sits in the background, the device being
+      // unplugged, another app taking it exclusively. Nothing else notices —
+      // the worklet simply stops producing chunks — so the hub would keep
+      // reporting "streaming" over a microphone that is gone. Ending the
+      // session says so instead of showing a live-looking display that will
+      // never gain another word.
+      mediaStream.getAudioTracks().forEach((track) => {
+        track.onended = () => {
+          releaseLocalAudio();
+          send({ type: "request-stop", tabId });
+          setLocalError("ไมโครโฟนหยุดทำงาน — กด F4 เพื่อเริ่มถอดเสียงใหม่");
+        };
+      });
 
       const context = new AudioContext({ sampleRate: SAMPLE_RATE });
       contextRef.current = context;

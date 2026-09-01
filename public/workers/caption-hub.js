@@ -33,9 +33,19 @@
  * says nothing. Left unhandled, the hub would believe a producer that no
  * longer exists is still about to send audio, and the session would hang in
  * "streaming" forever. So every tab pings on an interval, and this file
- * prunes any port that has gone quiet for longer than a few missed pings.
+ * prunes any port that has gone quiet for far longer than that.
  * `bye` makes the common case (closing a tab normally) instant; the heartbeat
  * is the backstop for everything else, on both browsers alike.
+ *
+ * A quiet port is *not* strong evidence of a dead tab, though: a backgrounded
+ * or folded-away tab has its timers throttled or frozen by the browser, and
+ * says nothing for exactly the same reason a crashed one does. So the prune
+ * window is deliberately generous (see `PRUNE_TIMEOUT_MS`) and, more
+ * importantly, pruning is *recoverable* — a message arriving on a port the hub
+ * has already forgotten re-admits that port instead of being dropped (see
+ * `handleMessage`). Without that, a tab pruned while out of sight came back to
+ * a hub that ignored it permanently: the UI still rendered and still animated,
+ * but no state update ever arrived and no button press ever landed.
  *
  * ── API slots ───────────────────────────────────────────────────────────
  * `.env` can describe a second transcribe + translate API set (the `_B`
@@ -58,8 +68,29 @@ const SAMPLE_RATE = 16_000;
 // in `src/hooks/useCaptionHub.ts`, the tab-side half of this heartbeat.
 /** How often the hub checks for tabs that have stopped pinging. */
 const PRUNE_CHECK_MS = 4_000;
-/** More than two missed pings' worth of tolerance for a delayed tick under load. */
-const PRUNE_TIMEOUT_MS = 13_000;
+/**
+ * How long a tab may go quiet before its port is pruned.
+ *
+ * Generous on purpose. A backgrounded tab — another window in front, the
+ * screen locked, a foldable closed, the machine asleep — has its timers
+ * throttled hard (Chrome drops hidden tabs to roughly one tick a minute) or
+ * frozen outright, so a quiet port is far more often a tab that is merely out
+ * of sight than one that has died. An earlier 13s window pruned those tabs
+ * within seconds of being folded away, and since a pruned port could never
+ * re-register, the tab came back to a UI that rendered fine but whose every
+ * button and every state update went nowhere. Pruning is a cleanup pass for
+ * genuinely dead tabs (a crash, a killed process), and nothing breaks if it
+ * takes a minute to notice one; `bye` still makes the common case instant, and
+ * `handleMessage` now re-admits a port that was pruned too eagerly anyway.
+ */
+const PRUNE_TIMEOUT_MS = 45_000;
+/**
+ * The same, for the tab currently holding the microphone. Longer still because
+ * pruning *this* one ends the recording for everybody, and because a producer
+ * that is genuinely alive refreshes its timestamp ten times a second through
+ * `pcm` alone — silence this long from a producer really is a dead one.
+ */
+const PRODUCER_PRUNE_TIMEOUT_MS = 120_000;
 
 /**
  * Longest the outgoing side of a hot slot swap is allowed to linger, waiting
@@ -1043,6 +1074,17 @@ function windDownConnection(ws) {
 function handleTabGone(port) {
   const info = ports.get(port);
   if (info && info.tabId && info.tabId === state.producerId) {
+    // Asked for directly rather than through `tellProducer`, which looks the
+    // producer up in `ports` — the caller is about to remove it from there,
+    // and for a *pruned* tab (as opposed to one that said `bye`) the window
+    // may well still exist with a live microphone on it. Telling it to let go
+    // keeps a tab that comes back from holding a mic that feeds a session the
+    // hub has already ended.
+    try {
+      port.postMessage({ type: "release-mic" });
+    } catch {
+      // See broadcast().
+    }
     handleProducerGone();
   }
 }
@@ -1052,20 +1094,53 @@ function handleMessage(port, msg) {
     return;
   }
 
-  const info = ports.get(port);
+  let info = ports.get(port);
+
+  /**
+   * A message on a port the hub is not tracking — the tab was pruned for
+   * going quiet (backgrounded, screen folded, machine asleep) but is plainly
+   * alive, since here is a message from it. Re-admit it rather than dropping
+   * the message.
+   *
+   * This is the whole recovery path, and it has to live here rather than in
+   * the `hello` case: dropping unknown ports before the switch meant even a
+   * fresh `hello` was discarded, so a tab that had been pruned once could
+   * never talk to the hub again for the rest of its life. It rendered
+   * normally, animated normally, and silently did nothing at all — no state
+   * updates arriving, no button reaching the hub — until it was reloaded.
+   *
+   * `bye` is the exception: a tab saying goodbye on a port already gone has
+   * nothing left to register.
+   */
   if (!info) {
-    return;
+    if (msg.type === "bye") {
+      return;
+    }
+    info = { tabId: msg.tabId ?? null, lastPing: Date.now() };
+    ports.set(port, info);
+    // Whatever it missed while pruned, in one message. `hello` sends its own
+    // snapshot below, so only anything else needs this.
+    if (msg.type !== "hello") {
+      try {
+        port.postMessage({ type: "state", state });
+      } catch {
+        // See broadcast().
+      }
+    }
   }
+
+  // Any message at all is proof of life, not just an explicit `ping`. Matters
+  // most for the producer, which sends `pcm` ten times a second and would
+  // otherwise be judged solely on a heartbeat the browser is free to throttle.
+  info.lastPing = Date.now();
 
   switch (msg.type) {
     case "hello":
       info.tabId = msg.tabId;
-      info.lastPing = Date.now();
       port.postMessage({ type: "state", state });
       break;
 
     case "ping":
-      info.lastPing = Date.now();
       break;
 
     case "bye":
@@ -1131,7 +1206,12 @@ self.onconnect = (event) => {
 setInterval(() => {
   const now = Date.now();
   for (const [port, info] of ports) {
-    if (info.tabId && now - info.lastPing > PRUNE_TIMEOUT_MS) {
+    if (!info.tabId) {
+      continue;
+    }
+    const timeout =
+      info.tabId === state.producerId ? PRODUCER_PRUNE_TIMEOUT_MS : PRUNE_TIMEOUT_MS;
+    if (now - info.lastPing > timeout) {
       handleTabGone(port);
       ports.delete(port);
     }

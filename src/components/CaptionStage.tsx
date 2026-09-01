@@ -55,7 +55,6 @@ export function CaptionStage() {
   );
   const showPartial = overrides.showPartial ?? defaults.showPartial;
 
-  const [preferredDeviceId, setPreferredDeviceId] = useState("");
   const [copied, setCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { swapSlotKey, setSwapSlotKey } = useSwapSlotKey();
@@ -63,13 +62,16 @@ export function CaptionStage() {
    *  binding instead of doing whatever it normally does. */
   const [capturingHotkey, setCapturingHotkey] = useState(false);
 
-  const { devices, refresh: refreshDevices } = useAudioDevices();
-
-  // Derived rather than stored, so unplugging the chosen microphone falls back
-  // to the first available one without an extra state sync.
-  const deviceId = devices.some((device) => device.deviceId === preferredDeviceId)
-    ? preferredDeviceId
-    : (devices[0]?.deviceId ?? "");
+  // The microphone lives in its own shared store rather than in this
+  // component's state — it is one of the settings every tab on this origin
+  // agrees on, so the tab that ends up recording uses the one that was picked,
+  // whichever tab it was picked in. See `src/lib/audio-device.ts`.
+  const {
+    devices,
+    deviceId,
+    setDeviceId,
+    refresh: refreshDevices,
+  } = useAudioDevices();
 
   const {
     status,
@@ -293,7 +295,7 @@ export function CaptionStage() {
           label: device.label,
         }))}
         deviceId={deviceId}
-        onDeviceChange={setPreferredDeviceId}
+        onDeviceChange={setDeviceId}
         status={status}
         isProducer={isProducer}
         onToggleStream={toggleStream}
